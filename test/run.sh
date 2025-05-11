@@ -4,7 +4,7 @@
 # Binaries are expected to be in the same directory as this script,
 # or you can set absolute paths.
 export SIMPLE9P_BINARY="$(pwd)/../build/simple9p"
-export NINEP_FUSE_BINARY="$(pwd)/9pfuse" # Make sure this path is correct
+export NINEP_FUSE_BINARY="$(pwd)/9pfuse/build/9pfuse" # Make sure this path is correct
 export HARNESS_RESULTS_ROOT_DIR="$(pwd)/results"
 
 # Optional: Set to 1 for detailed harness logs
