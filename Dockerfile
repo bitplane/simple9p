@@ -13,7 +13,7 @@ RUN apk add --no-cache \
 WORKDIR /build
 
 # Copy our source files
-COPY . ./
+COPY *.c *.h Makefile ./
 
 # Clone libixp
 RUN git clone --depth 1 https://github.com/0intro/libixp.git && \
