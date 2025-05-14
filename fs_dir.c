@@ -14,7 +14,7 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
     char *buf = NULL;
     uint64_t offset = r->ifcall.tread.offset;
     uint64_t pos = 0;
-    int include_dots = 0;  // Flag to decide if we include "." and ".." entries
+    int include_parent = 1;  // Include ".." entries but not "."
     
     if (!dir) {
         ixp_respond(r, strerror(errno));
@@ -37,8 +37,13 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
         char childpath[PATH_MAX];
         uint16_t slen;
         
-        /* Skip "." and ".." entries to avoid duplication with dotdir() in the FUSE client */
-        if (!include_dots && (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)) {
+        /* Skip "." entry as it's added by the client, but include ".." */
+        if (strcmp(de->d_name, ".") == 0) {
+            continue;
+        }
+        
+        /* Skip ".." entry only if include_parent is 0 */
+        if (!include_parent && strcmp(de->d_name, "..") == 0) {
             continue;
         }
         
@@ -96,13 +101,13 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
         /* Skip entries until we reach the offset */
         if (pos + slen <= offset) {
             pos += slen;
-            free((char *)s.name); /* Free our allocated name copy */
+            free((char *)s.name);
             continue;
         }
         
         /* If this entry won't fit in the buffer, stop */
         if (m.pos - buf + slen > r->ifcall.tread.count) {
-            free((char *)s.name); /* Free our allocated name copy */
+            free((char *)s.name);
             break;
         }
         

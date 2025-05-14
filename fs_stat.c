@@ -5,6 +5,7 @@
 #include <unistd.h> // For truncate, chmod, readlink
 #include <errno.h>
 #include <libgen.h> // For basename
+#include <limits.h> // For LONG_MAX
 
 // build_stat populates an IxpStat structure from a file's stat data.
 // s: The IxpStat structure to populate.
@@ -44,12 +45,8 @@ void build_stat(IxpStat *s, const char *path, const char *fullpath, struct stat 
     s->atime = st->st_atime;
     s->mtime = st->st_mtime;
 
-    // Length - For directories, report a block size rather than 0
-    if (S_ISDIR(st->st_mode)) {
-        s->length = st->st_blksize > 0 ? st->st_blksize : 4096; // Use block size or 4K as directory size
-    } else {
-        s->length = st->st_size;
-    }
+    // Length and blocks - use exactly what the OS reports
+    s->length = st->st_size;
     
     // For symlinks, the length should be the length of the target path
     if (S_ISLNK(st->st_mode)) {
@@ -58,8 +55,6 @@ void build_stat(IxpStat *s, const char *path, const char *fullpath, struct stat 
         if (len != -1) {
             target_buf[len] = '\0'; // Null terminate the result
             s->length = len; // For symlinks, length is the length of the target path string
-        } else {
-            s->length = 0; // Error reading link, or empty link
         }
     }
 
@@ -151,9 +146,16 @@ void fs_wstat(Ixp9Req *r) {
     FidState *state = r->fid->aux;
     char fullpath[PATH_MAX];
     IxpStat *s_new = &r->ifcall.twstat.stat; // The new stat data from client
-    struct stat current_st_os;             // Current OS attributes of the file
+    struct stat current_st_os;               // Current OS attributes of the file
     int respond_early = 0;
     char *original_fid_path_on_success_rename = NULL;
+
+    if (debug) {
+        fprintf(stderr, "fs_wstat: path=%s, length=%llu (mask=%llu)\n", 
+                state ? state->path : "NULL", 
+                (unsigned long long)s_new->length, 
+                (unsigned long long)~0ULL);
+    }
 
     if (!state || !state->path) {
         ixp_respond(r, "invalid fid state");
@@ -171,20 +173,44 @@ void fs_wstat(Ixp9Req *r) {
     }
 
     // Handle length change (truncate)
-    // P9_BIT64_MASK (~0ULL) is the "don't change" marker for uint64_t fields.
-    if (s_new->length != (uint64_t)~0 && s_new->length != (uint64_t)current_st_os.st_size) {
+    // This is a special case that's particularly important to handle correctly
+    // The FUSE protocol uses ~0ULL as a "don't change" marker for the length field
+    if (s_new->length != (uint64_t)~0ULL) {
+        if (debug) {
+            fprintf(stderr, "fs_wstat: truncating file to %llu (current %llu)\n", 
+                    (unsigned long long)s_new->length, 
+                    (unsigned long long)current_st_os.st_size);
+        }
+        
         if (S_ISDIR(current_st_os.st_mode)) {
-            ixp_respond(r, strerror(EISDIR)); // Corrected: use strerror for errno constants
+            // Can't truncate a directory
+            ixp_respond(r, strerror(EISDIR));
             respond_early = 1;
-        } else if (truncate(fullpath, s_new->length) < 0) {
-            ixp_respond(r, strerror(errno));
-            respond_early = 1;
+        } else {
+            // For regular files, perform the truncate
+            // First check if we actually need to truncate (optimization)
+            if (s_new->length != (uint64_t)current_st_os.st_size) {
+                // Validate the truncate length is reasonable
+                if (s_new->length > (uint64_t)LONG_MAX) {
+                    // Most filesystem APIs can't handle sizes larger than LONG_MAX
+                    ixp_respond(r, strerror(EFBIG));
+                    respond_early = 1;
+                } else {
+                    if (truncate(fullpath, (off_t)s_new->length) < 0) {
+                        ixp_respond(r, strerror(errno));
+                        respond_early = 1;
+                    }
+                }
+            }
         }
     }
 
-    // Handle mode changes
+    if (respond_early)
+        return;
+
+    // Handle mode changes (chmod)
     // P9_BIT32_MASK (~0U) is the "don't change" marker for uint32_t fields.
-    if (!respond_early && s_new->mode != (uint32_t)~0) {
+    if (s_new->mode != (uint32_t)~0) {
         mode_t requested_perms = s_new->mode & 0777; // Apply only permission bits
         if (requested_perms != (current_st_os.st_mode & 0777)) {
             if (chmod(fullpath, requested_perms) < 0) {
@@ -194,9 +220,12 @@ void fs_wstat(Ixp9Req *r) {
         }
     }
 
+    if (respond_early)
+        return;
+
     // Handle name changes (rename)
     // s_new->name being NULL or empty means "don't change name".
-    if (!respond_early && s_new->name != NULL && s_new->name[0] != '\0') {
+    if (s_new->name != NULL && s_new->name[0] != '\0') {
         char current_basename_buf[PATH_MAX];
         char *current_basename;
         char *path_copy_for_basename;
@@ -215,7 +244,7 @@ void fs_wstat(Ixp9Req *r) {
                 char *original_path_copy_for_dirname;
 
                 original_path_copy_for_dirname = strdup(state->path);
-                if(!original_path_copy_for_dirname){
+                if (!original_path_copy_for_dirname) {
                     ixp_respond(r, "out of memory for wstat rename");
                     respond_early = 1;
                 } else {
@@ -259,10 +288,11 @@ void fs_wstat(Ixp9Req *r) {
         }
     }
 
+    if (respond_early)
+        return;
+
     // Other wstat operations (e.g., mtime, uid, gid) are not implemented.
     // Client would set s_new->mtime, s_new->uid, etc. to non-"don't change" values.
 
-    if (!respond_early) {
-        ixp_respond(r, nil);
-    }
+    ixp_respond(r, nil);
 }
