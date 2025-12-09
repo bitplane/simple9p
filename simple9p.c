@@ -52,26 +52,38 @@ static void serve_device(int fd) {
         fprintf(stderr, "serve_device: Connection closed\n");
 }
 
+static void usage(const char *prog) {
+    fprintf(stderr, "Usage: %s [-d] [-h] [-p address] <directory>\n", prog);
+    fprintf(stderr, "  -d          Enable debug output\n");
+    fprintf(stderr, "  -h          Show this help\n");
+    fprintf(stderr, "  -p address  Listen address (default: tcp!*!564)\n");
+    fprintf(stderr, "              Use '-' for stdio mode\n");
+    fprintf(stderr, "              Use /dev/path for character device\n");
+}
+
 int main(int argc, char *argv[]) {
     char *addr = nil;
     int c;
-    
-    while((c = getopt(argc, argv, "dp:")) != -1) {
+
+    while((c = getopt(argc, argv, "dhp:")) != -1) {
         switch(c) {
         case 'd':
             debug = 1;
             break;
+        case 'h':
+            usage(argv[0]);
+            exit(0);
         case 'p':
             addr = optarg;
             break;
         default:
-            fprintf(stderr, "Usage: %s [-d] [-p address] <directory>\n", argv[0]);
+            usage(argv[0]);
             exit(1);
         }
     }
-    
+
     if(optind >= argc) {
-        fprintf(stderr, "Usage: %s [-d] [-p address] <directory>\n", argv[0]);
+        usage(argv[0]);
         exit(1);
     }
     
