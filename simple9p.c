@@ -97,7 +97,25 @@ int main(int argc, char *argv[]) {
     
     if(debug)
         fprintf(stderr, "Starting 9P server on %s for %s\n", addr, root_path);
-    
+
+    /* Check for stdio mode */
+    if(strcmp(addr, "-") == 0) {
+        /* Use stdin/stdout for 9P - requires bidirectional fd */
+        /* Caller should use: simple9p -p - /path <> /dev/device */
+        fd = STDIN_FILENO;
+        if(debug)
+            fprintf(stderr, "Using stdio (fd %d) for 9P\n", fd);
+
+        /* Initialize server structure */
+        memset(&server, 0, sizeof(server));
+        server.aux = &p9srv;
+
+        /* Serve on stdin/stdout */
+        serve_device(fd);
+
+        return 0;
+    }
+
     /* Check if addr is a device file */
     struct stat st;
     if(stat(addr, &st) == 0 && S_ISCHR(st.st_mode)) {
