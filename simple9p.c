@@ -28,26 +28,20 @@ Ixp9Srv p9srv = {
     .freefid = fs_freefid,
 };
 
-/* Handle device connection directly */
+/* Handle device/stdio connection directly */
 static void serve_device(int fd) {
     if(debug)
         fprintf(stderr, "serve_device: Starting with fd=%d\n", fd);
-    
-    /* Since this is a character device, we treat it as a direct connection */
-    /* not a listening socket, so we handle it directly */
-    
-    /* Create a connection structure */
-    IxpConn conn = {0};
-    conn.fd = fd;
-    conn.srv = &server;
-    conn.aux = &p9srv;  /* Pass the 9P server structure */
-    
+
+    /* Set up 9P service on the already-connected fd */
+    ixp_serve9conn_fd(&server, fd, &p9srv);
+
     if(debug)
-        fprintf(stderr, "serve_device: Serving 9P directly on device\n");
-    
-    /* Serve 9P protocol on this device */
-    ixp_serve9conn(&conn);
-    
+        fprintf(stderr, "serve_device: Entering server loop\n");
+
+    /* Run the server event loop */
+    ixp_serverloop(&server);
+
     if(debug)
         fprintf(stderr, "serve_device: Connection closed\n");
 }
