@@ -176,10 +176,9 @@ test_run() {
     _harness_log "'expected' run complete. Return: $(cat ./expected.return 2>/dev/null || echo 'N/A')"
 
     if [[ "$NO_MOUNT" -eq 1 ]]; then
-        _harness_log "NO_MOUNT=1. Copying 'expected' results to 'actual'."
-        cp "./expected.stdout" "./actual.stdout" 2>/dev/null || touch "./actual.stdout"
-        cp "./expected.stderr" "./actual.stderr" 2>/dev/null || touch "./actual.stderr"
-        cp "./expected.return" "./actual.return" 2>/dev/null || echo "0" > "./actual.return"
+        _harness_log "NO_MOUNT=1. Running test.sh against './actual' directly."
+        ( set -e; cd "./actual" || { _harness_log "Cannot cd ./actual"; exit 126; }; "../test.sh" > "../actual.stdout" 2> "../actual.stderr"; echo $? > "../actual.return")
+        _harness_log "'actual' run complete (NO_MOUNT). Return: $(cat ./actual.return 2>/dev/null || echo 'N/A')"
     else
         _harness_log "Executing test.sh against './mount' (actual via FUSE)..."
         (
@@ -275,12 +274,15 @@ test_diff() {
     # Also normalize:
     # - Link counts in ls -la output (2nd field after permissions)
     # - "total N" lines from ls
+    # - Temp dir paths (replace /path/to/temp/expected or /path/to/temp/mount with TESTROOT)
     grep -v "#### \[TEST RESULT START/END:" "./expected.all.raw" | \
         sed -E 's/^([-dlrwxsStT]{10}) +[0-9]+ /\1 NLINK /g' | \
-        sed -E 's/^total [0-9]+$/total BLOCKS/' > "./expected.all"
+        sed -E 's/^total [0-9]+$/total BLOCKS/' | \
+        sed -E 's|/[^ ]*/simple9ptest_[^/]+/(expected\|mount\|actual)|TESTROOT|g' > "./expected.all"
     grep -v "#### \[TEST RESULT START/END:" "./actual.all.raw" | \
         sed -E 's/^([-dlrwxsStT]{10}) +[0-9]+ /\1 NLINK /g' | \
-        sed -E 's/^total [0-9]+$/total BLOCKS/' > "./actual.all"
+        sed -E 's/^total [0-9]+$/total BLOCKS/' | \
+        sed -E 's|/[^ ]*/simple9ptest_[^/]+/(expected\|mount\|actual)|TESTROOT|g' > "./actual.all"
 
     # Perform the diff on filtered files
     if diff -u "./expected.all" "./actual.all" > "./results.diff"; then
