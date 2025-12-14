@@ -83,6 +83,7 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
         s.length = st2.st_size;
 
         /* 9P2000.u: symlink extension and numeric IDs */
+        /* extension must be non-NULL for 9P2000.u - empty string for non-symlinks */
         if (S_ISLNK(st2.st_mode)) {
             char target[PATH_MAX];
             ssize_t tlen = readlink(childpath, target, sizeof(target) - 1);
@@ -90,7 +91,11 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
                 target[tlen] = '\0';
                 s.extension = strdup(target);
                 s.length = tlen;
+            } else {
+                s.extension = strdup("");
             }
+        } else {
+            s.extension = strdup("");
         }
         s.n_uid = st2.st_uid;
         s.n_gid = st2.st_gid;

@@ -49,6 +49,7 @@ void build_stat(IxpStat *s, const char *path, const char *fullpath, struct stat 
     s->length = st->st_size;
     
     // For symlinks, store target in extension field and set length
+    // For non-symlinks, extension must be empty string (not NULL) for 9P2000.u
     if (S_ISLNK(st->st_mode)) {
         char target_buf[PATH_MAX];
         ssize_t len = readlink(fullpath, target_buf, sizeof(target_buf) - 1);
@@ -56,7 +57,11 @@ void build_stat(IxpStat *s, const char *path, const char *fullpath, struct stat 
             target_buf[len] = '\0';
             s->length = len;
             s->extension = strdup(target_buf);
+        } else {
+            s->extension = strdup("");
         }
+    } else {
+        s->extension = strdup("");
     }
 
     // 9P2000.u numeric IDs
