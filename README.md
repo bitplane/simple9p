@@ -8,13 +8,12 @@ Uses [libixp](https://github.com/0intro/libixp)
 
 ## Status
 
-This was cobbled together in a few hours using Claude for a proof of concept.
-It will eventually evolve into the default `qemount`'s back-end, unless I find
-something better.
+This will eventually evolve into the default `qemount`'s back-end, unless I
+find something better.
 
-Probably safe for read access in non-critical situations, but don't trust
-anything there's not a test for, and you've read the test, and... well...
-just don't trust it yet.
+While 2000.U support now works and the tests pass, it still shouldn't be
+considered trustworthy end to end. Expect weird edge cases and bugs that might
+mangle files.
 
 ## License
 
