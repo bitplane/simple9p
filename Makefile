@@ -32,7 +32,7 @@ clean:
 
 test/9pfuse/build/9pfuse:
 	@if [ ! -d test/9pfuse ]; then \
-		git clone https://github.com/aperezdc/9pfuse.git test/9pfuse; \
+		git clone -b simple9p https://github.com/bitplane/9pfuse.git test/9pfuse; \
 	fi
 	cd test/9pfuse && meson setup build && meson compile -C build
 
