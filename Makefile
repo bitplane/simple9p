@@ -30,4 +30,13 @@ libixp:
 clean:
 	rm -rf build
 
-.PHONY: all clean libixp
+test/9pfuse/build/9pfuse:
+	@if [ ! -d test/9pfuse ]; then \
+		git clone https://github.com/aperezdc/9pfuse.git test/9pfuse; \
+	fi
+	cd test/9pfuse && meson setup build && meson compile -C build
+
+test: $(TARGET) test/9pfuse/build/9pfuse
+	cd test && ./run.sh
+
+.PHONY: all clean libixp test

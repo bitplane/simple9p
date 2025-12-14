@@ -8,13 +8,13 @@ Uses [libixp](https://github.com/0intro/libixp)
 
 ## Status
 
-This was cobbled together in a few hours for a proof of concept. It has no test
-coverage, and the only reason it actually works is because libixp is battle
-tested.
+This was cobbled together in a few hours using Claude for a proof of concept.
+It will eventually evolve into the default `qemount`'s back-end, unless I find
+something better.
 
-Probably safe for read access in non-critical situations, but if you're gonna
-use this in a way that risks anything you care about, then pay someone to write
-a full battery of tests and do a security review.
+Probably safe for read access in non-critical situations, but don't trust
+anything there's not a test for, and you've read the test, and... well...
+just don't trust it yet.
 
 ## License
 
