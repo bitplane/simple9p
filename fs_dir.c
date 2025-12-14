@@ -29,6 +29,7 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
     }
     
     m = ixp_message(buf, r->ifcall.tread.count, MsgPack);
+    m.version = ixp_req_getversion(r);
     
     /* Read directory entries, skipping until we reach the requested offset */
     while ((de = readdir(dir))) {
@@ -80,11 +81,25 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
         s.atime = st2.st_atime;
         s.mtime = st2.st_mtime;
         s.length = st2.st_size;
-        
+
+        /* 9P2000.u: symlink extension and numeric IDs */
+        if (S_ISLNK(st2.st_mode)) {
+            char target[PATH_MAX];
+            ssize_t tlen = readlink(childpath, target, sizeof(target) - 1);
+            if (tlen != -1) {
+                target[tlen] = '\0';
+                s.extension = strdup(target);
+                s.length = tlen;
+            }
+        }
+        s.n_uid = st2.st_uid;
+        s.n_gid = st2.st_gid;
+        s.n_muid = st2.st_uid;
+
         /* Safely handle name assignment */
         s.name = strdup(de->d_name);
         if (!s.name) {
-            /* Memory allocation failed, skip this entry */
+            free((char *)s.extension);
             continue;
         }
         
@@ -96,27 +111,30 @@ void read_directory(Ixp9Req *r, const char *fullpath) {
         s.muid = s.uid;
         
         /* Calculate size of this stat entry */
-        slen = ixp_sizeof_stat(&s);
+        slen = ixp_sizeof_stat(&s, ixp_req_getversion(r));
         
         /* Skip entries until we reach the offset */
         if (pos + slen <= offset) {
             pos += slen;
             free((char *)s.name);
+            free((char *)s.extension);
             continue;
         }
         
         /* If this entry won't fit in the buffer, stop */
         if (m.pos - buf + slen > r->ifcall.tread.count) {
             free((char *)s.name);
+            free((char *)s.extension);
             break;
         }
         
         /* Add this entry to the result */
         ixp_pstat(&m, &s);
-        
-        /* Free our allocated name - ixp_pstat makes its own copy */
+
+        /* Free our allocated strings - ixp_pstat makes its own copy */
         free((char *)s.name);
-        
+        free((char *)s.extension);
+
         pos += slen;
     }
     

@@ -232,13 +232,15 @@ void fs_create(Ixp9Req *r) {
             return;
         }
     } else if (r->ifcall.tcreate.perm & P9_DMSYMLINK) {
-        // Symlink creation via Tcreate with P9_DMSYMLINK.
-        // The version of libixp used does not seem to support an 'extension' field
-        // for the symlink target in IxpFTCreate.
-        // Responding with an error if symlink creation is attempted this way.
-        // Proper symlink creation might need a different 9P mechanism or libixp feature.
-        ixp_respond(r, "symlink creation via Tcreate not supported in this server version");
-        return;
+        const char *target = r->ifcall.tcreate.extension;
+        if (!target || !target[0]) {
+            ixp_respond(r, "symlink target required");
+            return;
+        }
+        if (symlink(target, fullpath_os) < 0) {
+            ixp_respond(r, strerror(errno));
+            return;
+        }
     } else {
         // Create regular file
         int create_os_flags = O_CREAT | O_EXCL; 
@@ -300,8 +302,6 @@ void fs_create(Ixp9Req *r) {
     if (S_ISDIR(st_new.st_mode)) {
         r->fid->qid.type = P9_QTDIR;
     } else if (S_ISLNK(st_new.st_mode)) {
-        // This case will currently not be reached if P9_DMSYMLINK in perm leads to an error above.
-        // If symlinks are created by other means and this FID points to it, this is correct.
         r->fid->qid.type = P9_QTSYMLINK;
     } else {
         r->fid->qid.type = P9_QTFILE;

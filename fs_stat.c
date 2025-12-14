@@ -48,15 +48,21 @@ void build_stat(IxpStat *s, const char *path, const char *fullpath, struct stat 
     // Length and blocks - use exactly what the OS reports
     s->length = st->st_size;
     
-    // For symlinks, the length should be the length of the target path
+    // For symlinks, store target in extension field and set length
     if (S_ISLNK(st->st_mode)) {
         char target_buf[PATH_MAX];
         ssize_t len = readlink(fullpath, target_buf, sizeof(target_buf) - 1);
         if (len != -1) {
-            target_buf[len] = '\0'; // Null terminate the result
-            s->length = len; // For symlinks, length is the length of the target path string
+            target_buf[len] = '\0';
+            s->length = len;
+            s->extension = strdup(target_buf);
         }
     }
+
+    // 9P2000.u numeric IDs
+    s->n_uid = st->st_uid;
+    s->n_gid = st->st_gid;
+    s->n_muid = st->st_uid;
 
     // Name: The last component of the path
     // Handle root path specifically
@@ -90,6 +96,7 @@ void free_stat_strings(IxpStat *s) {
     if (s->uid) free((char*)s->uid);
     if (s->gid) free((char*)s->gid);
     if (s->muid) free((char*)s->muid);
+    if (s->extension) free((char*)s->extension);
 }
 
 // fs_stat handles Tstat messages.
@@ -120,7 +127,7 @@ void fs_stat(Ixp9Req *r) {
     memset(&s_ixp, 0, sizeof(IxpStat)); // Zero out the structure
     build_stat(&s_ixp, state->path, fullpath, &st_os);
 
-    size_of_ixp_stat = ixp_sizeof_stat(&s_ixp);
+    size_of_ixp_stat = ixp_sizeof_stat(&s_ixp, ixp_req_getversion(r));
     r->ofcall.rstat.nstat = size_of_ixp_stat;
     r->ofcall.rstat.stat = malloc(size_of_ixp_stat);
 
@@ -131,8 +138,8 @@ void fs_stat(Ixp9Req *r) {
     }
 
     m = ixp_message(r->ofcall.rstat.stat, size_of_ixp_stat, MsgPack);
-    ixp_pstat(&m, &s_ixp); // This packs s_ixp into the message.
-                           // libixp typically copies string contents.
+    m.version = ixp_req_getversion(r);
+    ixp_pstat(&m, &s_ixp);
 
     // Free allocated strings after packing
     free_stat_strings(&s_ixp);
