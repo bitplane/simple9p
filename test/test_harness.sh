@@ -272,8 +272,15 @@ test_diff() {
     test_gather "actual" > "./actual.all.raw" 2>&1 || { echo "Gather actual failed" > "./actual.all.raw"; }
 
     # Create filtered versions for diffing
-    grep -v "#### \[TEST RESULT START/END:" "./expected.all.raw" > "./expected.all"
-    grep -v "#### \[TEST RESULT START/END:" "./actual.all.raw" > "./actual.all"
+    # Also normalize:
+    # - Link counts in ls -la output (2nd field after permissions)
+    # - "total N" lines from ls
+    grep -v "#### \[TEST RESULT START/END:" "./expected.all.raw" | \
+        sed -E 's/^([-dlrwxsStT]{10}) +[0-9]+ /\1 NLINK /g' | \
+        sed -E 's/^total [0-9]+$/total BLOCKS/' > "./expected.all"
+    grep -v "#### \[TEST RESULT START/END:" "./actual.all.raw" | \
+        sed -E 's/^([-dlrwxsStT]{10}) +[0-9]+ /\1 NLINK /g' | \
+        sed -E 's/^total [0-9]+$/total BLOCKS/' > "./actual.all"
 
     # Perform the diff on filtered files
     if diff -u "./expected.all" "./actual.all" > "./results.diff"; then
