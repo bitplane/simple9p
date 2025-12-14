@@ -9,16 +9,16 @@ TARGET = build/simple9p
 
 all: build libixp $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) libixp
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
 
-build/%.o: %.c server.h
+build/%.o: %.c server.h | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build:
 	mkdir -p build
 
-libixp:
+libixp: | build
 	cd libixp/lib/libixp && \
 	for f in convert.c error.c map.c message.c request.c rpc.c server.c socket.c transport.c util.c timer.c client.c thread.c; do \
 		$(CC) $(CFLAGS) -I../../include -c $$f -o $$(pwd)/../../../build/$${f%.c}.o || exit 1; \
