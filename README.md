@@ -26,8 +26,8 @@ build with `make NETWORK=0`.
 
 Use `-r` for read only.
 
-Without a dir, 9d serves the platform's filesystem root: `/` on
-Unix-like systems, or a path above the volumes elsewhere. Platform volume
+Without a dir, 9d serves the platform's filesystem root: `/` on Unix-like and
+RISC OS systems, or a path above the volumes elsewhere. Platform volume
 namespaces are rediscovered whenever their root is listed.
 
 The default address for a network server is `tcp!localhost!564`.

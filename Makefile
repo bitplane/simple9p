@@ -113,8 +113,9 @@ test-build-options:
 test-namespace: build/namespace_test
 	./build/namespace_test
 
-test-protocol: build/protocol_test build/9d build/9d-synthetic
+test-protocol: build/protocol_test build/9d build/9d-riscos build/9d-synthetic
 	./build/protocol_test ./build/9d ./build/9d-synthetic
+	./build/protocol_test ./build/9d-riscos
 
 test-allocations: build/allocation_test
 	./build/allocation_test
@@ -151,6 +152,13 @@ build/allocation_test: test/allocation_test.c alloc.c path.c namespace.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DNINED_TESTING -o $@ \
 		test/allocation_test.c alloc.c path.c namespace.c platform_posix.c \
 		fs_ops.c fs_stat.c $(LIBS)
+
+build/9d-riscos: 9d.c alloc.c path.c namespace.c platform_riscos.c \
+		fs_ops.c fs_io.c fs_stat.c fs_dir.c server.h namespace.h \
+		platform.h build/libixp.a | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ \
+		9d.c alloc.c path.c namespace.c platform_riscos.c \
+		fs_ops.c fs_io.c fs_stat.c fs_dir.c $(LIBS)
 
 build/platform_posix-synthetic.o: platform_posix.c platform.h namespace.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) \
