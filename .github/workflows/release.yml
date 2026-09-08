@@ -10,7 +10,7 @@ permissions:
   packages: read
 
 env:
-  MOUNTIN_TOOLBOX_RELEASE: v0.1.1
+  MOUNTIN_TOOLBOX_RELEASE: v0.1.7
 
 jobs:
   source:
