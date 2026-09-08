@@ -75,6 +75,9 @@ jobs:
           - target: aarch64-haiku
             runner: ubuntu-24.04
             toolbox: haiku/r1-beta6-hrev59919-1/aarch64
+          - target: arm-riscos
+            runner: ubuntu-24.04
+            toolbox: riscos/7800
           - target: x86_64-darwin
             runner: ubuntu-24.04
             toolbox: puredarwin/17.4/x86_64

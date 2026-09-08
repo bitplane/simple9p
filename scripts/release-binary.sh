@@ -32,6 +32,12 @@ case "$target" in
             STRIP="$STRIP --strip-unneeded" \
             RELEASE_CFLAGS="-Os -g0 -DNDEBUG -DS9_PATH_MAX=1024"
         ;;
+    arm-riscos)
+        make release \
+            PLATFORM=riscos NETWORK=0 THREAD_LIBS= \
+            API_CPPFLAGS="-D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L" \
+            RELEASE_CFLAGS="-Os -fno-common -DS9_PATH_MAX=1024"
+        ;;
     x86_64-darwin)
         make release \
             NETWORK=0 STATIC=0 THREAD_LIBS= \
