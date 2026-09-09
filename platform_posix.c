@@ -25,8 +25,11 @@
 
 static int native_root = -1;
 
+static void cache_drop(void);
+
 void platform_namespace_cleanup(Namespace *ns) {
     (void)ns;
+    cache_drop();
     if(native_root >= 0) {
         close(native_root);
         native_root = -1;
@@ -43,64 +46,145 @@ int platform_namespace_ready(Namespace *ns) {
     return 0;
 }
 
-static int root_descriptor(const ResolvedPath *path) {
-    int root;
+static int dup_cloexec(int descriptor) {
+#ifdef F_DUPFD_CLOEXEC
+    return fcntl(descriptor, F_DUPFD_CLOEXEC, 0);
+#else
+    int copy = dup(descriptor);
 
+    if(copy >= 0 && fcntl(copy, F_SETFD, FD_CLOEXEC) < 0) {
+        int error = errno;
+        close(copy);
+        errno = error;
+        return -1;
+    }
+    return copy;
+#endif
+}
+
+static int root_descriptor(const ResolvedPath *path) {
     if(namespace.synthetic)
         return open(path->root_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    root = native_root;
+    return dup_cloexec(native_root);
+}
 
-#ifdef F_DUPFD_CLOEXEC
-    return fcntl(root, F_DUPFD_CLOEXEC, 0);
-#else
-    {
-        int descriptor = dup(root);
+/*
+ * One-entry cache of the last parent directory opened. Without it a walk
+ * of depth N reopens every component from the root at each step, N squared
+ * openat calls in all; with it each step extends the previous one by one
+ * openat. Before the entry is used, the directory at its path is checked
+ * against the cached inode, so a rename underneath the server, by 9d or by
+ * anyone else, costs a cache miss rather than a wrong answer. Holding the
+ * descriptor also stops the inode number being reused meanwhile.
+ */
+static struct {
+    int fd;
+    dev_t dev;
+    ino_t ino;
+    char root[S9_PATH_MAX];
+    char relative[S9_PATH_MAX];
+} parent_cache = { -1, 0, 0, "", "" };
 
-        if(descriptor >= 0 && fcntl(descriptor, F_SETFD, FD_CLOEXEC) < 0) {
-            int error = errno;
-            close(descriptor);
-            errno = error;
-            return -1;
-        }
-        return descriptor;
+static void cache_drop(void) {
+    if(parent_cache.fd >= 0)
+        close(parent_cache.fd);
+    parent_cache.fd = -1;
+}
+
+static const char *root_key(const ResolvedPath *path) {
+    return namespace.synthetic && path->root_path ? path->root_path : "";
+}
+
+static void cache_store(const ResolvedPath *path, const char *relative,
+                        int directory) {
+    struct stat st;
+    int copy;
+
+    cache_drop();
+    if(strlen(root_key(path)) >= sizeof(parent_cache.root) ||
+       strlen(relative) >= sizeof(parent_cache.relative))
+        return;
+    if(fstat(directory, &st) < 0)
+        return;
+    copy = dup_cloexec(directory);
+    if(copy < 0)
+        return;
+    strcpy(parent_cache.root, root_key(path));
+    strcpy(parent_cache.relative, relative);
+    parent_cache.dev = st.st_dev;
+    parent_cache.ino = st.st_ino;
+    parent_cache.fd = copy;
+}
+
+/*
+ * If the cache covers `relative` or a prefix of it, return a fresh
+ * descriptor for the cached directory and point *remainder past the covered
+ * part (NULL when it covers all of it). Returns -1 on a miss.
+ */
+static int cache_take(const ResolvedPath *path, int root, const char *relative,
+                      const char **remainder) {
+    struct stat st;
+    size_t length;
+
+    if(parent_cache.fd < 0 || strcmp(root_key(path), parent_cache.root) != 0)
+        return -1;
+    length = strlen(parent_cache.relative);
+    if(strncmp(relative, parent_cache.relative, length) != 0 ||
+       (relative[length] != '\0' && relative[length] != '/'))
+        return -1;
+    if(fstatat(root, parent_cache.relative, &st, AT_SYMLINK_NOFOLLOW) < 0 ||
+       st.st_dev != parent_cache.dev || st.st_ino != parent_cache.ino) {
+        cache_drop();
+        return -1;
     }
-#endif
+    *remainder = relative[length] ? relative + length + 1 : NULL;
+    return dup_cloexec(parent_cache.fd);
 }
 
 static int open_parent(const ResolvedPath *path, char *leaf,
                        size_t leaf_size) {
     char relative[S9_PATH_MAX];
-    char *component;
-    char *next;
+    const char *component;
+    const char *slash;
+    char *cursor;
     int directory;
+    int cached;
 
-    directory = root_descriptor(path);
-    if(directory < 0)
-        return -1;
-    if(!path->relative_path[0]) {
-        if(leaf_size < 2) {
-            close(directory);
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        strcpy(leaf, ".");
-        return directory;
-    }
     if(strlen(path->relative_path) >= sizeof(relative)) {
-        close(directory);
         errno = ENAMETOOLONG;
         return -1;
     }
-    strcpy(relative, path->relative_path);
+    slash = strrchr(path->relative_path, '/');
+    component = slash ? slash + 1 : path->relative_path;
+    if(!component[0])
+        component = ".";
+    if(strlen(component) >= leaf_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(leaf, component);
+    directory = root_descriptor(path);
+    if(directory < 0 || !slash)
+        return directory;
+
+    /* `relative` is the parent directory's path; walk it from the root or
+     * from the cached prefix. */
+    memcpy(relative, path->relative_path, (size_t)(slash - path->relative_path));
+    relative[slash - path->relative_path] = '\0';
     component = relative;
-    for(;;) {
+    cached = cache_take(path, directory, relative, &component);
+    if(cached >= 0) {
+        close(directory);
+        directory = cached;
+    }
+    cursor = component ? relative + (component - relative) : NULL;
+    while(cursor && *cursor) {
+        char *next = strchr(cursor, '/');
         int child;
 
-        next = strchr(component, '/');
-        if(!next)
-            break;
-        *next = '\0';
-        child = openat(directory, component,
+        if(next)
+            *next = '\0';
+        child = openat(directory, cursor,
                        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if(child < 0) {
             int error = errno;
@@ -110,14 +194,11 @@ static int open_parent(const ResolvedPath *path, char *leaf,
         }
         close(directory);
         directory = child;
-        component = next + 1;
+        if(next)
+            *next = '/';
+        cursor = next ? next + 1 : NULL;
     }
-    if(strlen(component) >= leaf_size) {
-        close(directory);
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-    strcpy(leaf, component);
+    cache_store(path, relative, directory);
     return directory;
 }
 

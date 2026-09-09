@@ -1344,6 +1344,49 @@ static void test_special_files(Client *client, const char *root,
     assert(lstat(path, &native) < 0 && errno == ENOENT);
 }
 
+/* A directory renamed underneath the server must not be served from the
+ * cached descriptor of its old path. */
+static void test_parent_cache(Client *client, const char *root) {
+    const char *deep[] = { "deep", "a", "b", "file" };
+    const char *moved[] = { "deep", "a", "moved", "file" };
+    IxpFcall response;
+    char path[1024];
+    char second[1024];
+
+    response = walk(client, 1, 140, deep, 4);
+    expect_type("walk deep path", &response, P9_RWalk);
+    assert(response.rwalk.nwqid == 4);
+    ixp_freefcall(&response);
+    response = clunk(client, 140);
+    expect_type("clunk deep path", &response, P9_RClunk);
+    ixp_freefcall(&response);
+
+    make_path(path, sizeof(path), root, "deep/a/b");
+    make_path(second, sizeof(second), root, "deep/a/moved");
+    assert(rename(path, second) == 0);
+    assert(mkdir(path, 0700) == 0);
+
+    response = walk(client, 1, 141, deep, 4);
+    expect_type("walk stale path", &response, P9_RWalk);
+    assert(response.rwalk.nwqid == 3);
+    ixp_freefcall(&response);
+    response = walk(client, 1, 142, moved, 4);
+    expect_type("walk moved path", &response, P9_RWalk);
+    assert(response.rwalk.nwqid == 4);
+    ixp_freefcall(&response);
+    response = open_fid(client, 142, P9_OREAD);
+    expect_type("open moved file", &response, P9_ROpen);
+    ixp_freefcall(&response);
+    response = read_fid(client, 142, 0, 16);
+    expect_type("read moved file", &response, P9_RRead);
+    assert(response.rread.count == 4 &&
+           memcmp(response.rread.data, "deep", 4) == 0);
+    ixp_freefcall(&response);
+    response = clunk(client, 142);
+    expect_type("clunk moved file", &response, P9_RClunk);
+    ixp_freefcall(&response);
+}
+
 static void test_read_only(const char *binary, const char *root) {
     const char *name[] = { "read-only" };
     IxpFcall response;
@@ -1681,6 +1724,14 @@ int main(int argc, char **argv) {
     assert(mkdir(path, 0700) == 0);
     make_path(path, sizeof(path), root, "write-only");
     write_file(path, "write-only");
+    make_path(path, sizeof(path), root, "deep");
+    assert(mkdir(path, 0700) == 0);
+    make_path(path, sizeof(path), root, "deep/a");
+    assert(mkdir(path, 0700) == 0);
+    make_path(path, sizeof(path), root, "deep/a/b");
+    assert(mkdir(path, 0700) == 0);
+    make_path(path, sizeof(path), root, "deep/a/b/file");
+    write_file(path, "deep");
 
     test_invalid_negotiation(argv[1], root);
     test_response_pack_failure(argv[1], root);
@@ -1701,6 +1752,7 @@ int main(int argc, char **argv) {
     test_qid_mutations(&client);
     test_partial_wstat_qid(&client, root);
     test_special_files(&client, root, strstr(argv[1], "riscos") != NULL);
+    test_parent_cache(&client, root);
     stop_server(&client, child);
     test_read_only(argv[1], root);
     if(argc == 3)
@@ -1739,6 +1791,11 @@ int main(int argc, char **argv) {
     make_path(path, sizeof(path), root, "made-fifo"); unlink(path);
     make_path(path, sizeof(path), root, "made-sock"); unlink(path);
     make_path(path, sizeof(path), root, "made-dev"); unlink(path);
+    make_path(path, sizeof(path), root, "deep/a/moved/file"); unlink(path);
+    make_path(path, sizeof(path), root, "deep/a/moved"); rmdir(path);
+    make_path(path, sizeof(path), root, "deep/a/b"); rmdir(path);
+    make_path(path, sizeof(path), root, "deep/a"); rmdir(path);
+    make_path(path, sizeof(path), root, "deep"); rmdir(path);
     make_path(path, sizeof(path), root, "dir"); assert(rmdir(path) == 0);
     assert(rmdir(root) == 0);
     make_path(path, sizeof(path), outside, "secret"); unlink(path);

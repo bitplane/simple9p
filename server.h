@@ -59,6 +59,10 @@ struct FidState {
     FidState *next;
 };
 
+/* Positioned I/O. Build with -DS9_NO_PREAD on a libc without pread(2). */
+ssize_t s9_pread(int fd, void *buffer, size_t size, off_t offset);
+ssize_t s9_pwrite(int fd, const void *buffer, size_t size, off_t offset);
+
 void *s9_malloc(size_t size);
 char *s9_strdup(const char *string);
 void s9_free(void *pointer);

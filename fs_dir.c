@@ -302,13 +302,8 @@ void read_file(Ixp9Req *r, FidState *state) {
     }
     if(limit == 0)
         count = 0;
-    else if(lseek(state->fd, offset, SEEK_SET) < 0) {
-        int error = errno;
-        s9_free(buffer);
-        respond_errno(r, error);
-        return;
-    } else
-        count = read(state->fd, buffer, limit);
+    else
+        count = s9_pread(state->fd, buffer, limit, offset);
     if(count < 0) {
         int error = errno;
         s9_free(buffer);

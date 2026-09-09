@@ -9,6 +9,26 @@
 #include <string.h>
 #include <unistd.h>
 
+ssize_t s9_pread(int fd, void *buffer, size_t size, off_t offset) {
+#ifdef S9_NO_PREAD
+    if(lseek(fd, offset, SEEK_SET) < 0)
+        return -1;
+    return read(fd, buffer, size);
+#else
+    return pread(fd, buffer, size, offset);
+#endif
+}
+
+ssize_t s9_pwrite(int fd, const void *buffer, size_t size, off_t offset) {
+#ifdef S9_NO_PREAD
+    if(lseek(fd, offset, SEEK_SET) < 0)
+        return -1;
+    return write(fd, buffer, size);
+#else
+    return pwrite(fd, buffer, size, offset);
+#endif
+}
+
 static int checked_offset(uint64_t value, off_t *offset) {
     off_t converted = (off_t)value;
 
@@ -112,13 +132,12 @@ void fs_write(Ixp9Req *r) {
         ixp_respond(r, nil);
         return;
     }
-    if(checked_offset(r->ifcall.twrite.offset, &offset) < 0 ||
-       lseek(state->fd, offset, SEEK_SET) < 0) {
+    if(checked_offset(r->ifcall.twrite.offset, &offset) < 0) {
         respond_errno(r, errno);
         return;
     }
-    count = write(state->fd, r->ifcall.twrite.data,
-                  r->ifcall.twrite.count);
+    count = s9_pwrite(state->fd, r->ifcall.twrite.data,
+                      r->ifcall.twrite.count, offset);
     if(count < 0) {
         respond_errno(r, errno);
         return;

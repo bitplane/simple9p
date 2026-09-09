@@ -260,6 +260,20 @@ static int find_root(const char *path, size_t length, size_t *index) {
     return -1;
 }
 
+/*
+ * Reset a ResolvedPath without zeroing its two S9_PATH_MAX buffers. Only the
+ * string contents matter to readers, and resolving runs once per directory
+ * entry during a listing.
+ */
+static void clear_resolved(ResolvedPath *resolved) {
+    resolved->synthetic = 0;
+    resolved->export_root = 0;
+    resolved->root_id = 0;
+    resolved->root_path = NULL;
+    resolved->native_path[0] = '\0';
+    resolved->relative_path[0] = '\0';
+}
+
 int namespace_resolve(const char *path, ResolvedPath *resolved) {
     char cleaned[S9_PATH_MAX];
     const char *name;
@@ -275,7 +289,7 @@ int namespace_resolve(const char *path, ResolvedPath *resolved) {
     }
     strcpy(cleaned, path);
     cleanname(cleaned);
-    memset(resolved, 0, sizeof(*resolved));
+    clear_resolved(resolved);
 
     if(!namespace.synthetic) {
         name = cleaned;
@@ -343,7 +357,7 @@ int namespace_resolve_root(const NamespaceRoot *root,
         errno = ENAMETOOLONG;
         return -1;
     }
-    memset(resolved, 0, sizeof(*resolved));
+    clear_resolved(resolved);
     resolved->export_root = 1;
     resolved->root_id = root->id;
     resolved->root_path = root->path;
