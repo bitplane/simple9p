@@ -473,8 +473,10 @@ static void test_response_pack_failure(const char *binary, const char *root) {
 static void test_walks(Client *client) {
     const char *partial[] = { "dir", "missing", "later" };
     const char *directory[] = { "dir" };
-    const char *invalid[] = { ".." };
+    const char *up[] = { ".." };
+    const char *through_parent[] = { "dir", "..", "dir", "file" };
     IxpFcall response;
+    IxpQid root_qid;
 
     response = walk(client, 1, 2, partial, 3);
     expect_type("partial walk", &response, P9_RWalk);
@@ -496,8 +498,69 @@ static void test_walks(Client *client) {
     expect_type("clunk", &response, P9_RClunk);
     ixp_freefcall(&response);
 
-    response = walk(client, 1, 4, invalid, 1);
-    expect_error("invalid component", &response, EINVAL);
+    /* ".." is a real walk element; at the root it stays at the root. */
+    root_qid = stat_qid(client, 1);
+    response = walk(client, 1, 4, up, 1);
+    expect_type("walk .. from root", &response, P9_RWalk);
+    assert(response.rwalk.nwqid == 1);
+    assert(response.rwalk.wqid[0].path == root_qid.path);
+    assert(response.rwalk.wqid[0].type & P9_QTDIR);
+    ixp_freefcall(&response);
+    response = clunk(client, 4);
+    expect_type("clunk .. fid", &response, P9_RClunk);
+    ixp_freefcall(&response);
+    response = walk(client, 1, 4, through_parent, 4);
+    expect_type("walk through ..", &response, P9_RWalk);
+    assert(response.rwalk.nwqid == 4);
+    assert(response.rwalk.wqid[1].path == root_qid.path);
+    assert(!(response.rwalk.wqid[3].type & P9_QTDIR));
+    ixp_freefcall(&response);
+    response = clunk(client, 4);
+    expect_type("clunk file reached through ..", &response, P9_RClunk);
+    ixp_freefcall(&response);
+}
+
+static void test_create_inherits(Client *client, const char *root) {
+    const char *inherit[] = { "inherit" };
+    IxpFcall response;
+    struct stat native;
+    char path[1024];
+
+    response = walk(client, 1, 150, inherit, 1);
+    expect_type("walk inherit", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    response = create_fid(client, 150, "file", 0666, P9_ORDWR, NULL);
+    expect_type("create file under 0750", &response, P9_RCreate);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "inherit/file");
+    assert(lstat(path, &native) == 0 && (native.st_mode & 07777) == 0640);
+    response = clunk(client, 150);
+    expect_type("clunk inherited file", &response, P9_RClunk);
+    ixp_freefcall(&response);
+
+    response = walk(client, 1, 150, inherit, 1);
+    expect_type("walk inherit again", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    response = create_fid(client, 150, "exec", 0755, P9_ORDWR, NULL);
+    expect_type("create exec under 0750", &response, P9_RCreate);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "inherit/exec");
+    assert(lstat(path, &native) == 0 && (native.st_mode & 07777) == 0751);
+    response = clunk(client, 150);
+    expect_type("clunk inherited exec", &response, P9_RClunk);
+    ixp_freefcall(&response);
+
+    response = walk(client, 1, 150, inherit, 1);
+    expect_type("walk inherit for dir", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    response = create_fid(client, 150, "sub", P9_DMDIR | 0777, P9_OREAD,
+                          NULL);
+    expect_type("create dir under 0750", &response, P9_RCreate);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "inherit/sub");
+    assert(lstat(path, &native) == 0 && (native.st_mode & 07777) == 0750);
+    response = clunk(client, 150);
+    expect_type("clunk inherited dir", &response, P9_RClunk);
     ixp_freefcall(&response);
 }
 
@@ -1635,13 +1698,13 @@ int main(int argc, char **argv) {
 
     assert(argc == 2 || argc == 3);
     root = mkdtemp(template);
-    assert(root);
+    assert(root && chmod(root, 0755) == 0);
     outside = mkdtemp(outside_template);
     assert(outside);
     first_root = mkdtemp(first_template);
-    assert(first_root);
+    assert(first_root && chmod(first_root, 0755) == 0);
     second_root = mkdtemp(second_template);
-    assert(second_root);
+    assert(second_root && chmod(second_root, 0755) == 0);
     roots_fd = mkstemp(roots_template);
     assert(roots_fd >= 0);
     assert(close(roots_fd) == 0);
@@ -1732,6 +1795,8 @@ int main(int argc, char **argv) {
     assert(mkdir(path, 0700) == 0);
     make_path(path, sizeof(path), root, "deep/a/b/file");
     write_file(path, "deep");
+    make_path(path, sizeof(path), root, "inherit");
+    assert(mkdir(path, 0750) == 0);
 
     test_invalid_negotiation(argv[1], root);
     test_response_pack_failure(argv[1], root);
@@ -1753,6 +1818,7 @@ int main(int argc, char **argv) {
     test_partial_wstat_qid(&client, root);
     test_special_files(&client, root, strstr(argv[1], "riscos") != NULL);
     test_parent_cache(&client, root);
+    test_create_inherits(&client, root);
     stop_server(&client, child);
     test_read_only(argv[1], root);
     if(argc == 3)
@@ -1796,6 +1862,10 @@ int main(int argc, char **argv) {
     make_path(path, sizeof(path), root, "deep/a/b"); rmdir(path);
     make_path(path, sizeof(path), root, "deep/a"); rmdir(path);
     make_path(path, sizeof(path), root, "deep"); rmdir(path);
+    make_path(path, sizeof(path), root, "inherit/file"); unlink(path);
+    make_path(path, sizeof(path), root, "inherit/exec"); unlink(path);
+    make_path(path, sizeof(path), root, "inherit/sub"); rmdir(path);
+    make_path(path, sizeof(path), root, "inherit"); rmdir(path);
     make_path(path, sizeof(path), root, "dir"); assert(rmdir(path) == 0);
     assert(rmdir(root) == 0);
     make_path(path, sizeof(path), outside, "secret"); unlink(path);

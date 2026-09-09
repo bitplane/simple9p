@@ -184,6 +184,21 @@ void fs_attach(Ixp9Req *r) {
     ixp_respond(r, nil);
 }
 
+/* The parent of a virtual path. The root is its own parent. */
+static char *parent_path_alloc(const char *path) {
+    const char *slash = strrchr(path, '/');
+    size_t length = slash && slash != path ? (size_t)(slash - path) : 1;
+    char *parent = s9_malloc(length + 1);
+
+    if(!parent) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    memcpy(parent, path, length);
+    parent[length] = '\0';
+    return parent;
+}
+
 void fs_walk(Ixp9Req *r) {
     FidState *state = r->fid->aux;
     char *candidate;
@@ -206,8 +221,11 @@ void fs_walk(Ixp9Req *r) {
         ResolvedPath resolved;
         struct stat st;
 
-        next = namespace_join_virtual_alloc(candidate,
-                                            r->ifcall.twalk.wname[i]);
+        if(strcmp(r->ifcall.twalk.wname[i], "..") == 0)
+            next = parent_path_alloc(candidate);
+        else
+            next = namespace_join_virtual_alloc(candidate,
+                                                r->ifcall.twalk.wname[i]);
         if(!next) {
             if(i == 0) {
                 int error = errno;

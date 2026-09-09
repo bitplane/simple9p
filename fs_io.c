@@ -286,6 +286,7 @@ void fs_create(Ixp9Req *r) {
     ResolvedPath resolved;
     struct stat st;
     mode_t permissions;
+    mode_t parent_mode;
     uint32_t types;
     int flags;
     int created = 0;
@@ -309,6 +310,12 @@ void fs_create(Ixp9Req *r) {
         respond_errno(r, EPERM);
         return;
     }
+    if(namespace_resolve(state->path, &resolved) < 0 ||
+       platform_lstat(&resolved, &st) < 0) {
+        respond_errno(r, errno);
+        return;
+    }
+    parent_mode = st.st_mode;
     new_path = namespace_join_virtual_alloc(state->path,
                                             r->ifcall.tcreate.name);
     if(!new_path) {
@@ -378,7 +385,17 @@ void fs_create(Ixp9Req *r) {
         respond_errno(r, EACCES);
         return;
     }
+    /*
+     * open(5): a new directory gets perm & (~0777 | (dir.perm & 0777)),
+     * anything else perm & (~0666 | (dir.perm & 0666)). So a directory
+     * without group write yields files without group write, whatever the
+     * client asked for.
+     */
     permissions = r->ifcall.tcreate.perm & 0777;
+    if(is_directory)
+        permissions &= parent_mode & 0777;
+    else
+        permissions &= 0111 | (parent_mode & 0666);
     if(r->ifcall.tcreate.perm & P9_DMSETUID)
         permissions |= S_ISUID;
     if(r->ifcall.tcreate.perm & P9_DMSETGID)
