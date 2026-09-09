@@ -260,7 +260,7 @@ void fs_create(Ixp9Req *r) {
         respond_errno(r, error);
         return;
     }
-    types = r->ifcall.tcreate.perm & ~0777U;
+    types = r->ifcall.tcreate.perm & ~(0777U | P9_DMSETUID | P9_DMSETGID);
     is_directory = !!(types & P9_DMDIR);
     is_symlink = !!(types & P9_DMSYMLINK);
     if(types != 0 && types != P9_DMDIR && types != P9_DMSYMLINK) {
@@ -296,6 +296,10 @@ void fs_create(Ixp9Req *r) {
         return;
     }
     permissions = r->ifcall.tcreate.perm & 0777;
+    if(r->ifcall.tcreate.perm & P9_DMSETUID)
+        permissions |= S_ISUID;
+    if(r->ifcall.tcreate.perm & P9_DMSETGID)
+        permissions |= S_ISGID;
     if(is_directory) {
         if(platform_mkdir(&resolved, permissions) < 0)
             goto fail;

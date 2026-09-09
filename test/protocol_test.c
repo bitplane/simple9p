@@ -11,6 +11,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -838,13 +842,13 @@ static void test_wstat_validation(Client *client, const char *root) {
     stat.mode = 0600;
     stat.mtime = 1000000002;
     response = wstat_fid(client, 70, &stat);
-    expect_error("truncate combined with metadata", &response, EINVAL);
+    expect_type("truncate combined with metadata", &response, P9_RWStat);
     ixp_freefcall(&response);
     assert(lstat(path, &native) == 0);
-    assert(native.st_size == before.st_size);
-    assert((native.st_mode & 0777) == (before.st_mode & 0777));
+    assert(native.st_size == 4);
+    assert((native.st_mode & 0777) == 0600);
     assert(native.st_atime == before.st_atime);
-    assert(native.st_mtime == before.st_mtime);
+    assert(native.st_mtime == 1000000002);
 
     stat = unchanged_stat();
     stat.length = 4;
@@ -857,9 +861,39 @@ static void test_wstat_validation(Client *client, const char *root) {
     stat.uid = "someone";
     stat.length = 1;
     response = wstat_fid(client, 70, &stat);
-    expect_type("unsupported ownership wstat", &response, P9_RError);
+    expect_error("unsupported ownership wstat", &response, EOPNOTSUPP);
     ixp_freefcall(&response);
     assert(lstat(path, &native) == 0 && native.st_size == 4);
+
+    stat = unchanged_stat();
+    stat.n_uid = (uint32_t)getuid();
+    stat.n_gid = (uint32_t)getgid();
+    response = wstat_fid(client, 70, &stat);
+    expect_type("numeric ownership wstat", &response, P9_RWStat);
+    ixp_freefcall(&response);
+    assert(lstat(path, &native) == 0);
+    assert(native.st_uid == getuid() && native.st_gid == getgid());
+
+    stat = unchanged_stat();
+    stat.uid = "0";
+    if(getuid() == 0)
+        stat.uid = "1";
+    stat.gid = "";
+    stat.mode = 0604;
+    response = wstat_fid(client, 70, &stat);
+    if(getuid() == 0) {
+        expect_type("string ownership wstat as root", &response, P9_RWStat);
+        ixp_freefcall(&response);
+        assert(lstat(path, &native) == 0 && native.st_uid == 1);
+        assert((native.st_mode & 0777) == 0604);
+        assert(chown(path, 0, (gid_t)-1) == 0);
+        assert(chmod(path, 0600) == 0);
+    } else {
+        expect_error("foreign ownership wstat", &response, EPERM);
+        ixp_freefcall(&response);
+        assert(lstat(path, &native) == 0 && native.st_uid == getuid());
+        assert((native.st_mode & 0777) == 0600);
+    }
 
     assert(lstat(path, &before) == 0);
     stat = unchanged_stat();
@@ -1096,20 +1130,118 @@ static void test_partial_wstat_qid(Client *client, const char *root) {
 
     make_path(path, sizeof(path), root, "partial-wstat");
     assert(unlink(path) == 0);
+    if(getuid() != 0) {
+        stat = unchanged_stat();
+        stat.length = 2;
+        stat.mode = 0604;
+        stat.n_uid = (uint32_t)getuid() + 1;
+        response = wstat_fid(client, 122, &stat);
+        expect_error("failed chown rolls back mode before truncating",
+                     &response, EPERM);
+        ixp_freefcall(&response);
+        after = stat_qid(client, 122);
+        assert(after.version == before.version);
+        stat = unpack_stat(client, 122);
+        assert((stat.mode & 0777) == 0600);
+        assert(stat.length == strlen("partial-wstat"));
+        ixp_freestat(&stat);
+        response = read_fid(client, 122, 0, sizeof(data));
+        expect_type("failed wstat leaves data unchanged", &response,
+                    P9_RRead);
+        assert(response.rread.count == strlen("partial-wstat"));
+        assert(memcmp(response.rread.data, "partial-wstat",
+                      response.rread.count) == 0);
+        ixp_freefcall(&response);
+    }
+
+    /* What ftruncate(2) sends on a 9P2000.u mount: length and mtime. */
     stat = unchanged_stat();
     stat.length = 2;
     stat.mtime = 1000000002;
     response = wstat_fid(client, 122, &stat);
-    expect_error("reject compound truncate wstat", &response, EINVAL);
+    expect_type("ftruncate-style wstat on an open fid", &response, P9_RWStat);
     ixp_freefcall(&response);
-    after = stat_qid(client, 122);
-    assert(after.version == before.version);
+    stat = unpack_stat(client, 122);
+    assert(stat.length == 2);
+    assert(stat.mtime == 1000000002);
+    ixp_freestat(&stat);
     response = read_fid(client, 122, 0, sizeof(data));
-    expect_type("compound truncate leaves data unchanged", &response,
-                P9_RRead);
-    assert(response.rread.count == strlen("partial-wstat"));
-    assert(memcmp(response.rread.data, "partial-wstat",
-                  response.rread.count) == 0);
+    expect_type("read truncated file", &response, P9_RRead);
+    assert(response.rread.count == 2);
+    assert(memcmp(response.rread.data, "pa", 2) == 0);
+    ixp_freefcall(&response);
+}
+
+static void expect_mode(Client *client, uint32_t fid, const char *name,
+                        uint32_t type, uint32_t permissions,
+                        const char *extension) {
+    const char *walk_name[] = { name };
+    IxpFcall response;
+    IxpStat stat;
+
+    response = walk(client, 1, fid, walk_name, 1);
+    expect_type(name, &response, P9_RWalk);
+    ixp_freefcall(&response);
+    stat = unpack_stat(client, fid);
+    if((stat.mode & ~0777U) != type || (stat.mode & 0777) != permissions ||
+       strcmp(stat.extension, extension) != 0) {
+        fprintf(stderr, "%s: mode %#x extension '%s', expected %#x '%s'\n",
+                name, stat.mode, stat.extension, type | permissions,
+                extension);
+        abort();
+    }
+    ixp_freestat(&stat);
+}
+
+static void test_special_files(Client *client, const char *root) {
+    IxpFcall response;
+    IxpStat stat;
+    struct stat native;
+    char path[1024];
+
+    expect_mode(client, 130, "fifo", P9_DMNAMEDPIPE, 0600, "");
+    expect_mode(client, 131, "sock", P9_DMSOCKET, 0700, "");
+    expect_mode(client, 132, "setuid", P9_DMSETUID | P9_DMSETGID, 0755, "");
+    make_path(path, sizeof(path), root, "chardev");
+    if(lstat(path, &native) == 0)
+        expect_mode(client, 133, "chardev", P9_DMDEVICE, 0600, "c 1 3");
+
+    response = open_fid(client, 130, P9_OREAD);
+    expect_error("open fifo", &response, EOPNOTSUPP);
+    ixp_freefcall(&response);
+
+    stat = unchanged_stat();
+    stat.mode = P9_DMSETUID | 0700;
+    response = wstat_fid(client, 132, &stat);
+    expect_type("chmod setuid", &response, P9_RWStat);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "setuid");
+    assert(lstat(path, &native) == 0);
+    assert((native.st_mode & 07777) == (S_ISUID | 0700));
+    stat = unchanged_stat();
+    stat.mode = P9_DMDEVICE | 0700;
+    response = wstat_fid(client, 132, &stat);
+    expect_error("chmod cannot change type", &response, EOPNOTSUPP);
+    ixp_freefcall(&response);
+    stat = unchanged_stat();
+    stat.mode = 0700;
+    response = wstat_fid(client, 132, &stat);
+    expect_type("chmod clears setuid", &response, P9_RWStat);
+    ixp_freefcall(&response);
+    assert(lstat(path, &native) == 0 && (native.st_mode & 07777) == 0700);
+
+    response = walk(client, 1, 134, NULL, 0);
+    expect_type("clone root for setuid create", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    response = create_fid(client, 134, "suid-created", P9_DMSETUID | 0700,
+                          P9_ORDWR, NULL);
+    expect_type("create setuid file", &response, P9_RCreate);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "suid-created");
+    assert(lstat(path, &native) == 0);
+    assert((native.st_mode & 07777) == (S_ISUID | 0700));
+    response = clunk(client, 134);
+    expect_type("clunk setuid file", &response, P9_RClunk);
     ixp_freefcall(&response);
 }
 
@@ -1424,6 +1556,28 @@ int main(int argc, char **argv) {
     write_file(path, "persistent");
     make_path(path, sizeof(path), root, "escape");
     assert(symlink(outside, path) == 0);
+    make_path(path, sizeof(path), root, "fifo");
+    assert(mkfifo(path, 0600) == 0);
+    make_path(path, sizeof(path), root, "sock");
+    {
+        struct sockaddr_un address;
+        int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+
+        assert(sock >= 0);
+        memset(&address, 0, sizeof(address));
+        address.sun_family = AF_UNIX;
+        assert(strlen(path) < sizeof(address.sun_path));
+        strcpy(address.sun_path, path);
+        assert(bind(sock, (struct sockaddr *)&address, sizeof(address)) == 0);
+        assert(close(sock) == 0);
+        assert(chmod(path, 0700) == 0);
+    }
+    make_path(path, sizeof(path), root, "setuid");
+    write_file(path, "setuid");
+    assert(chmod(path, S_ISUID | S_ISGID | 0755) == 0);
+    make_path(path, sizeof(path), root, "chardev");
+    /* Only root can make device nodes; the test skips the check otherwise. */
+    (void)mknod(path, S_IFCHR | 0600, makedev(1, 3));
 
     test_invalid_negotiation(argv[1], root);
     test_response_pack_failure(argv[1], root);
@@ -1443,6 +1597,7 @@ int main(int argc, char **argv) {
     test_orclose_and_exec(&client, root);
     test_qid_mutations(&client);
     test_partial_wstat_qid(&client, root);
+    test_special_files(&client, root);
     stop_server(&client, child);
     test_read_only(argv[1], root);
     if(argc == 3)
@@ -1471,6 +1626,11 @@ int main(int argc, char **argv) {
     make_path(path, sizeof(path), root, "metadata"); unlink(path);
     make_path(path, sizeof(path), root, "read-only"); unlink(path);
     make_path(path, sizeof(path), root, "escape"); unlink(path);
+    make_path(path, sizeof(path), root, "fifo"); unlink(path);
+    make_path(path, sizeof(path), root, "sock"); unlink(path);
+    make_path(path, sizeof(path), root, "setuid"); unlink(path);
+    make_path(path, sizeof(path), root, "chardev"); unlink(path);
+    make_path(path, sizeof(path), root, "suid-created"); unlink(path);
     make_path(path, sizeof(path), root, "dir"); assert(rmdir(path) == 0);
     assert(rmdir(root) == 0);
     make_path(path, sizeof(path), outside, "secret"); unlink(path);

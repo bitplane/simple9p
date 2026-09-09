@@ -15,6 +15,9 @@
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 
 #ifdef S9_NO_DUPFD_CLOEXEC
 #undef F_DUPFD_CLOEXEC
@@ -283,6 +286,41 @@ int platform_chmod(const ResolvedPath *path, mode_t mode) {
     close(parent);
     errno = error;
     return result;
+}
+
+int platform_chown(const ResolvedPath *path, uid_t uid, gid_t gid) {
+    char leaf[S9_PATH_MAX];
+    int parent = open_parent(path, leaf, sizeof(leaf));
+    int result;
+    int error;
+
+    if(parent < 0)
+        return -1;
+    result = fchownat(parent, leaf, uid, gid, AT_SYMLINK_NOFOLLOW);
+    error = errno;
+    close(parent);
+    errno = error;
+    return result;
+}
+
+int platform_device_spec(const struct stat *st, char *buffer, size_t size) {
+    char type;
+
+    if(S_ISCHR(st->st_mode))
+        type = 'c';
+    else if(S_ISBLK(st->st_mode))
+        type = 'b';
+    else {
+        errno = EINVAL;
+        return -1;
+    }
+    if(snprintf(buffer, size, "%c %u %u", type,
+                (unsigned)major(st->st_rdev),
+                (unsigned)minor(st->st_rdev)) >= (int)size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
 }
 
 int platform_set_times(const ResolvedPath *path, time_t atime, time_t mtime) {

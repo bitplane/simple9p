@@ -235,6 +235,20 @@ int platform_chmod(const ResolvedPath *path, mode_t mode) {
     return chmod(path->native_path, mode);
 }
 
+int platform_chown(const ResolvedPath *path, uid_t uid, gid_t gid) {
+    if(!parent_is_exported(path))
+        return -1;
+    return chown(path->native_path, uid, gid);
+}
+
+int platform_device_spec(const struct stat *st, char *buffer, size_t size) {
+    (void)st;
+    (void)buffer;
+    (void)size;
+    errno = EINVAL;
+    return -1;
+}
+
 int platform_set_times(const ResolvedPath *path, time_t atime, time_t mtime) {
     struct utimbuf times;
     if(!parent_is_exported(path))

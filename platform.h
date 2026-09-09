@@ -21,8 +21,12 @@ int platform_remove(const ResolvedPath *path, int directory);
 int platform_rename(const ResolvedPath *old_path,
                     const ResolvedPath *new_path);
 int platform_chmod(const ResolvedPath *path, mode_t mode);
+int platform_chown(const ResolvedPath *path, uid_t uid, gid_t gid);
 int platform_set_times(const ResolvedPath *path, time_t atime, time_t mtime);
 int platform_truncate(const ResolvedPath *path, off_t length);
+/* Describe a device node as 9P2000.u does: "b major minor" or
+ * "c major minor". Returns -1 when the platform has no such notion. */
+int platform_device_spec(const struct stat *st, char *buffer, size_t size);
 int platform_namespace_ready(Namespace *ns);
 void platform_namespace_cleanup(Namespace *ns);
 

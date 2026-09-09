@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
 
@@ -23,6 +24,41 @@ static char *number_string(uint32_t value) {
     return s9_strdup(buffer);
 }
 
+/* The 9P2000.u mode bit that names a file's type, or 0 for a plain file. */
+static uint32_t type_bits(mode_t mode) {
+    if(S_ISDIR(mode))
+        return P9_DMDIR;
+    if(S_ISLNK(mode))
+        return P9_DMSYMLINK;
+    if(S_ISCHR(mode) || S_ISBLK(mode))
+        return P9_DMDEVICE;
+    if(S_ISFIFO(mode))
+        return P9_DMNAMEDPIPE;
+    if(S_ISSOCK(mode))
+        return P9_DMSOCKET;
+    return 0;
+}
+
+static uint32_t p9_mode(mode_t mode) {
+    uint32_t result = (uint32_t)(mode & 0777) | type_bits(mode);
+
+    if(mode & S_ISUID)
+        result |= P9_DMSETUID;
+    if(mode & S_ISGID)
+        result |= P9_DMSETGID;
+    return result;
+}
+
+static mode_t unix_permissions(uint32_t mode) {
+    mode_t result = (mode_t)(mode & 0777);
+
+    if(mode & P9_DMSETUID)
+        result |= S_ISUID;
+    if(mode & P9_DMSETGID)
+        result |= S_ISGID;
+    return result;
+}
+
 int build_stat(IxpStat *s, const char *path, const ResolvedPath *resolved,
                const struct stat *st,
                const char *symlink_target) {
@@ -31,11 +67,7 @@ int build_stat(IxpStat *s, const char *path, const ResolvedPath *resolved,
                   S_ISLNK(st->st_mode) ? P9_QTSYMLINK : P9_QTFILE;
     s->qid.path = namespace_qid(resolved, st);
     s->qid.version = qid_version(st);
-    s->mode = st->st_mode & 0777;
-    if(S_ISDIR(st->st_mode))
-        s->mode |= P9_DMDIR;
-    else if(S_ISLNK(st->st_mode))
-        s->mode |= P9_DMSYMLINK;
+    s->mode = p9_mode(st->st_mode);
     s->atime = (uint32_t)st->st_atime;
     s->mtime = (uint32_t)st->st_mtime;
     s->length = (uint64_t)st->st_size;
@@ -53,6 +85,11 @@ int build_stat(IxpStat *s, const char *path, const ResolvedPath *resolved,
                                                             NULL);
         if(s->extension)
             s->length = strlen(s->extension);
+    } else if(S_ISCHR(st->st_mode) || S_ISBLK(st->st_mode)) {
+        char spec[64];
+
+        s->extension = s9_strdup(
+            platform_device_spec(st, spec, sizeof(spec)) == 0 ? spec : "");
     } else
         s->extension = s9_strdup("");
     if(!s->name || !s->uid || !s->gid || !s->muid || !s->extension) {
@@ -238,10 +275,82 @@ static void commit_updates(RenameUpdate *updates) {
     }
 }
 
-static int ownership_requested(const IxpStat *stat) {
-    return (stat->uid && stat->uid[0]) || (stat->gid && stat->gid[0]) ||
-           (stat->muid && stat->muid[0]) || stat->n_uid != (uint32_t)~0 ||
-           stat->n_gid != (uint32_t)~0 || stat->n_muid != (uint32_t)~0;
+static int parse_id(const char *text, uint32_t *value) {
+    char *end;
+    unsigned long parsed;
+
+    if(!text || !text[0])
+        return 0;
+    errno = 0;
+    parsed = strtoul(text, &end, 10);
+    if(errno || end == text || *end || parsed > UINT32_MAX) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+    *value = (uint32_t)parsed;
+    return 1;
+}
+
+/*
+ * Work out the owner a wstat asks for. The numeric 9P2000.u ids win. A
+ * plain 9P2000 client may pass a decimal number as the name, which is what
+ * 9d itself reports. Other names would need a password database, so they
+ * are refused.
+ */
+static int requested_owner(const IxpStat *stat, uid_t *uid, gid_t *gid,
+                           int *change) {
+    uint32_t value;
+    int result;
+
+    *change = 0;
+    if(stat->n_muid != UINT32_MAX) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+    if(stat->n_uid != UINT32_MAX) {
+        *uid = (uid_t)stat->n_uid;
+        *change = 1;
+    } else if((result = parse_id(stat->uid, &value)) != 0) {
+        if(result < 0)
+            return -1;
+        *uid = (uid_t)value;
+        *change = 1;
+    }
+    if(stat->n_gid != UINT32_MAX) {
+        *gid = (gid_t)stat->n_gid;
+        *change = 1;
+    } else if((result = parse_id(stat->gid, &value)) != 0) {
+        if(result < 0)
+            return -1;
+        *gid = (gid_t)value;
+        *change = 1;
+    }
+    return 0;
+}
+
+static int apply_chown(FidState *state, const ResolvedPath *resolved,
+                       uid_t uid, gid_t gid) {
+    return state->fd >= 0 ? fchown(state->fd, uid, gid)
+                          : platform_chown(resolved, uid, gid);
+}
+
+static int apply_chmod(FidState *state, const ResolvedPath *resolved,
+                       mode_t mode) {
+    return state->fd >= 0 ? fchmod(state->fd, mode)
+                          : platform_chmod(resolved, mode);
+}
+
+static int apply_times(FidState *state, const ResolvedPath *resolved,
+                       time_t atime, time_t mtime) {
+    struct timespec times[2];
+
+    if(state->fd < 0)
+        return platform_set_times(resolved, atime, mtime);
+    times[0].tv_sec = atime;
+    times[0].tv_nsec = 0;
+    times[1].tv_sec = mtime;
+    times[1].tv_nsec = 0;
+    return futimens(state->fd, times);
 }
 
 void fs_wstat(Ixp9Req *r) {
@@ -249,28 +358,32 @@ void fs_wstat(Ixp9Req *r) {
     IxpStat *requested = &r->ifcall.twstat.stat;
     ResolvedPath resolved;
     struct stat original;
+    uid_t new_uid = (uid_t)-1;
+    gid_t new_gid = (gid_t)-1;
+    mode_t new_mode = 0;
     int change_name;
     int change_length = requested->length != UINT64_MAX;
     int change_mode = requested->mode != UINT32_MAX;
     int change_atime = requested->atime != UINT32_MAX;
     int change_mtime = requested->mtime != UINT32_MAX;
-    int change_ownership;
+    int change_owner;
     int has_changes;
-    int mutated = 0;
+    int applied_owner = 0;
+    int applied_mode = 0;
+    int applied_length = 0;
 
     if(!state || !state->path) {
         respond_errno(r, EBADF);
         return;
     }
+    if(requested_owner(requested, &new_uid, &new_gid, &change_owner) < 0) {
+        respond_errno(r, errno);
+        return;
+    }
     change_name = requested->name && requested->name[0] &&
                   strcmp(requested->name, path_basename(state->path)) != 0;
-    change_ownership = (requested->uid && requested->uid[0]) ||
-                       (requested->gid && requested->gid[0]) ||
-                       (requested->muid && requested->muid[0]) ||
-                       (ixp_req_getversion(r) == IXP_V9P2000U &&
-                        ownership_requested(requested));
     has_changes = change_name || change_length || change_mode ||
-                  change_atime || change_mtime || change_ownership;
+                  change_atime || change_mtime || change_owner;
     if(nined.read_only && has_changes) {
         respond_errno(r, EROFS);
         return;
@@ -288,21 +401,13 @@ void fs_wstat(Ixp9Req *r) {
         respond_errno(r, EPERM);
         return;
     }
-    if(change_ownership) {
-        respond_errno(r, EOPNOTSUPP);
-        return;
-    }
     if(S_ISLNK(original.st_mode) &&
        (change_length || change_mode || change_atime || change_mtime)) {
         respond_errno(r, EOPNOTSUPP);
         return;
     }
     if(change_name && (change_length || change_mode || change_atime ||
-                       change_mtime)) {
-        respond_errno(r, EINVAL);
-        return;
-    }
-    if(change_length && (change_mode || change_atime || change_mtime)) {
+                       change_mtime || change_owner)) {
         respond_errno(r, EINVAL);
         return;
     }
@@ -311,12 +416,13 @@ void fs_wstat(Ixp9Req *r) {
         return;
     }
     if(change_mode) {
-        uint32_t allowed_type = S_ISDIR(original.st_mode) ? P9_DMDIR :
-                                S_ISLNK(original.st_mode) ? P9_DMSYMLINK : 0;
-        if((requested->mode & ~0777U) != allowed_type) {
+        uint32_t type = requested->mode &
+                        ~(0777U | P9_DMSETUID | P9_DMSETGID);
+        if(type != type_bits(original.st_mode)) {
             respond_errno(r, EOPNOTSUPP);
             return;
         }
+        new_mode = unix_permissions(requested->mode);
     }
     if(change_length) {
         off_t length = (off_t)requested->length;
@@ -373,52 +479,57 @@ void fs_wstat(Ixp9Req *r) {
         return;
     }
 
+    /*
+     * Mode and owner first because they can be undone, then truncation,
+     * then times last so a truncation doesn't overwrite a requested mtime.
+     * A times failure after truncation can't be rolled back; the qid is
+     * bumped so the client re-reads.
+     */
     if(change_mode) {
-        int result = state->fd >= 0 ? fchmod(state->fd,
-                                             requested->mode & 0777)
-                                    : platform_chmod(&resolved,
-                                                     requested->mode & 0777);
-        if(result < 0) {
-            respond_errno(r, errno);
-            return;
-        }
-        mutated = 1;
+        if(apply_chmod(state, &resolved, new_mode) < 0)
+            goto fail;
+        applied_mode = 1;
+    }
+    if(change_owner) {
+        if(apply_chown(state, &resolved, new_uid, new_gid) < 0)
+            goto fail;
+        applied_owner = 1;
     }
     if(change_length) {
         off_t length = (off_t)requested->length;
         int result = state->fd >= 0 ? ftruncate(state->fd, length)
                                     : platform_truncate(&resolved, length);
-        if(result < 0) {
-            int error = errno;
-            if(change_mode)
-                platform_chmod(&resolved, original.st_mode & 0777);
-            if(mutated)
-                qid_bump();
-            respond_errno(r, error);
-            return;
-        }
-        mutated = 1;
+        if(result < 0)
+            goto fail;
+        applied_length = 1;
     }
     if(change_atime || change_mtime) {
-        time_t atime = change_atime ? requested->atime : original.st_atime;
-        time_t mtime = change_mtime ? requested->mtime : original.st_mtime;
-        if(platform_set_times(&resolved, atime, mtime) < 0) {
-            int error = errno;
-            int rollback_failed = change_mode &&
-                (state->fd >= 0 ? fchmod(state->fd,
-                                          original.st_mode & 0777)
-                                : platform_chmod(&resolved,
-                                                 original.st_mode & 0777)) < 0;
-            if(rollback_failed)
-                qid_bump();
-            respond_errno(r, error);
-            return;
-        }
-        mutated = 1;
+        if(apply_times(state, &resolved,
+                       change_atime ? requested->atime : original.st_atime,
+                       change_mtime ? requested->mtime : original.st_mtime) < 0)
+            goto fail;
     }
-    if(mutated)
-        qid_bump();
+    qid_bump();
     if(state->stat_valid && platform_lstat(&resolved, &state->opened_stat) < 0)
         state->stat_valid = 0;
     ixp_respond(r, nil);
+    return;
+
+fail:
+    {
+        int error = errno;
+        int rollback_failed = 0;
+
+        if(applied_owner &&
+           apply_chown(state, &resolved, original.st_uid,
+                       original.st_gid) < 0)
+            rollback_failed = 1;
+        /* After the chown, which may have cleared setuid bits. */
+        if(applied_mode &&
+           apply_chmod(state, &resolved, original.st_mode & 07777) < 0)
+            rollback_failed = 1;
+        if(applied_length || rollback_failed)
+            qid_bump();
+        respond_errno(r, error);
+    }
 }
