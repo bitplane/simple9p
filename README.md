@@ -1,10 +1,11 @@
 # 🪙 9d - an embeddable 9p server
 
-A smallish (<1MB) 9p server that can be static linked in busybox images.
+A small 9p server made to serve the root filesystem of embedded operating
+systems. Used in [mountin](https://github.com/bitplane/mountin) for disk image
+recovery.
 
-Built for [mountin](https://github.com/bitplane/mountin)
-
-Uses [libixp](https://github.com/0intro/libixp)
+Uses [libixp](https://github.com/0intro/libixp) with UNIX extensions (where
+supported).
 
 ## Building
 
@@ -27,8 +28,7 @@ build with `make NETWORK=0`.
 Use `-r` for read only.
 
 Without a dir, 9d serves the platform's filesystem root: `/` on Unix-like and
-RISC OS systems, or a path above the volumes elsewhere. Platform volume
-namespaces are rediscovered whenever their root is listed.
+RISC OS systems, or a path above the volumes elsewhere. 
 
 The default address for a network server is `tcp!localhost!564`.
 Use `-p -` for stdio or `-p stream!path` for an existing device like a serial
