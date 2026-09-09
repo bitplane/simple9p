@@ -17,6 +17,9 @@ ssize_t platform_readlink(const ResolvedPath *path, char *buffer, size_t size);
 int platform_access_execute(const ResolvedPath *path);
 int platform_mkdir(const ResolvedPath *path, mode_t mode);
 int platform_symlink(const char *target, const ResolvedPath *path);
+/* Create a device node, FIFO or socket. `mode` carries the S_IF* type. */
+int platform_mknod(const ResolvedPath *path, mode_t mode, unsigned major,
+                   unsigned minor);
 int platform_remove(const ResolvedPath *path, int directory);
 int platform_rename(const ResolvedPath *old_path,
                     const ResolvedPath *new_path);

@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,11 @@ void fs_read(Ixp9Req *r) {
     FidState *state = r->fid->aux;
 
     if(!state || !state->path) {
+        respond_errno(r, EBADF);
+        return;
+    }
+    /* libixp lets a read through on OWRITE|OTRUNC; don't rely on it. */
+    if((state->open_flags & O_ACCMODE) == O_WRONLY) {
         respond_errno(r, EBADF);
         return;
     }
@@ -222,6 +228,39 @@ void fs_open(Ixp9Req *r) {
     ixp_respond(r, nil);
 }
 
+/* Parse a 9P2000.u device extension: "b major minor" or "c major minor". */
+static int parse_device(const char *extension, mode_t *type,
+                        unsigned *major, unsigned *minor) {
+    const char *p = extension;
+    char *end;
+    unsigned long value[2];
+    int i;
+
+    if(!p || (p[0] != 'b' && p[0] != 'c') || p[1] != ' ')
+        return -1;
+    *type = p[0] == 'b' ? S_IFBLK : S_IFCHR;
+    p += 2;
+    for(i = 0; i < 2; i++) {
+        if(*p < '0' || *p > '9')
+            return -1;
+        errno = 0;
+        value[i] = strtoul(p, &end, 10);
+        if(errno || value[i] > UINT_MAX)
+            return -1;
+        p = end;
+        if(i == 0) {
+            if(*p != ' ')
+                return -1;
+            p++;
+        }
+    }
+    if(*p)
+        return -1;
+    *major = (unsigned)value[0];
+    *minor = (unsigned)value[1];
+    return 0;
+}
+
 void fs_create(Ixp9Req *r) {
     FidState *state = r->fid->aux;
     char *new_path;
@@ -233,6 +272,10 @@ void fs_create(Ixp9Req *r) {
     int created = 0;
     int is_directory;
     int is_symlink;
+    int is_special;
+    mode_t special_type = 0;
+    unsigned major = 0;
+    unsigned minor = 0;
     char *link_copy = NULL;
 
     if(!state || !state->path) {
@@ -260,13 +303,34 @@ void fs_create(Ixp9Req *r) {
         respond_errno(r, error);
         return;
     }
-    types = r->ifcall.tcreate.perm & ~(0777U | P9_DMSETUID | P9_DMSETGID);
+    types = r->ifcall.tcreate.perm & ~(0777U | S9_DMSPECIAL);
     is_directory = !!(types & P9_DMDIR);
     is_symlink = !!(types & P9_DMSYMLINK);
-    if(types != 0 && types != P9_DMDIR && types != P9_DMSYMLINK) {
+    is_special = types == P9_DMDEVICE || types == P9_DMNAMEDPIPE ||
+                 types == P9_DMSOCKET;
+    if(types != 0 && types != P9_DMDIR && types != P9_DMSYMLINK &&
+       !is_special) {
         s9_free(new_path);
         respond_errno(r, EOPNOTSUPP);
         return;
+    }
+    if(is_special) {
+        if((r->ifcall.tcreate.mode & 3) != P9_OREAD ||
+           (r->ifcall.tcreate.mode & P9_OTRUNC)) {
+            s9_free(new_path);
+            respond_errno(r, EACCES);
+            return;
+        }
+        if(types == P9_DMNAMEDPIPE)
+            special_type = S_IFIFO;
+        else if(types == P9_DMSOCKET)
+            special_type = S_IFSOCK;
+        else if(parse_device(r->ifcall.tcreate.extension, &special_type,
+                             &major, &minor) < 0) {
+            s9_free(new_path);
+            respond_errno(r, EINVAL);
+            return;
+        }
     }
     if(is_symlink) {
         if((r->ifcall.tcreate.mode & 3) != P9_OREAD ||
@@ -300,7 +364,16 @@ void fs_create(Ixp9Req *r) {
         permissions |= S_ISUID;
     if(r->ifcall.tcreate.perm & P9_DMSETGID)
         permissions |= S_ISGID;
-    if(is_directory) {
+    if(r->ifcall.tcreate.perm & S9_DMSETVTX)
+        permissions |= S_ISVTX;
+    if(is_special) {
+        /* Linux clunks the fid straight after a mknod, so the node is not
+         * opened. Reads on it answer EBADF, as for any unopened fid. */
+        if(platform_mknod(&resolved, special_type | permissions,
+                          major, minor) < 0)
+            goto fail;
+        created = 1;
+    } else if(is_directory) {
         if(platform_mkdir(&resolved, permissions) < 0)
             goto fail;
         created = 1;
@@ -380,6 +453,9 @@ void fs_remove(Ixp9Req *r) {
         respond_errno(r, errno);
         return;
     }
+    /* Some platforms refuse to remove an open file. The fid goes away
+     * whether or not the remove succeeds, so nothing is lost by closing. */
+    fid_state_close(state);
     if(platform_remove(&resolved, S_ISDIR(st.st_mode)) < 0) {
         respond_errno(r, errno);
         return;

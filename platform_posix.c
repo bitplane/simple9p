@@ -232,6 +232,22 @@ int platform_symlink(const char *target, const ResolvedPath *path) {
     return result;
 }
 
+int platform_mknod(const ResolvedPath *path, mode_t mode, unsigned major,
+                   unsigned minor) {
+    char leaf[S9_PATH_MAX];
+    int parent = open_parent(path, leaf, sizeof(leaf));
+    int result;
+    int error;
+
+    if(parent < 0)
+        return -1;
+    result = mknodat(parent, leaf, mode, makedev(major, minor));
+    error = errno;
+    close(parent);
+    errno = error;
+    return result;
+}
+
 int platform_remove(const ResolvedPath *path, int directory) {
     char leaf[S9_PATH_MAX];
     int parent = open_parent(path, leaf, sizeof(leaf));

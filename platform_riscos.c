@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
 
@@ -72,6 +73,18 @@ int platform_mkdir(const ResolvedPath *path, mode_t mode) {
 
 int platform_symlink(const char *target, const ResolvedPath *path) {
     return path_allowed(path) ? symlink(target, path->native_path) : -1;
+}
+
+int platform_mknod(const ResolvedPath *path, mode_t mode, unsigned major,
+                   unsigned minor) {
+    (void)major;
+    (void)minor;
+    if(!path_allowed(path))
+        return -1;
+    if(S_ISFIFO(mode))
+        return mkfifo(path->native_path, mode & 07777);
+    errno = EOPNOTSUPP;
+    return -1;
 }
 
 int platform_remove(const ResolvedPath *path, int directory) {

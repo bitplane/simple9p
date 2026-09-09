@@ -46,6 +46,8 @@ static uint32_t p9_mode(mode_t mode) {
         result |= P9_DMSETUID;
     if(mode & S_ISGID)
         result |= P9_DMSETGID;
+    if(mode & S_ISVTX)
+        result |= S9_DMSETVTX;
     return result;
 }
 
@@ -56,6 +58,8 @@ static mode_t unix_permissions(uint32_t mode) {
         result |= S_ISUID;
     if(mode & P9_DMSETGID)
         result |= S_ISGID;
+    if(mode & S9_DMSETVTX)
+        result |= S_ISVTX;
     return result;
 }
 
@@ -416,8 +420,7 @@ void fs_wstat(Ixp9Req *r) {
         return;
     }
     if(change_mode) {
-        uint32_t type = requested->mode &
-                        ~(0777U | P9_DMSETUID | P9_DMSETGID);
+        uint32_t type = requested->mode & ~(0777U | S9_DMSPECIAL);
         if(type != type_bits(original.st_mode)) {
             respond_errno(r, EOPNOTSUPP);
             return;

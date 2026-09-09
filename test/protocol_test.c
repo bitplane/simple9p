@@ -19,6 +19,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#define S9_DMSETVTX 0x00010000U
+
 typedef struct Client {
     int fd;
     uint16_t tag;
@@ -1193,7 +1195,10 @@ static void expect_mode(Client *client, uint32_t fid, const char *name,
     ixp_freestat(&stat);
 }
 
-static void test_special_files(Client *client, const char *root) {
+static void test_special_files(Client *client, const char *root,
+                               int riscos) {
+    const char *sticky_name[] = { "sticky" };
+    const char *write_only_name[] = { "write-only" };
     IxpFcall response;
     IxpStat stat;
     struct stat native;
@@ -1243,6 +1248,100 @@ static void test_special_files(Client *client, const char *root) {
     response = clunk(client, 134);
     expect_type("clunk setuid file", &response, P9_RClunk);
     ixp_freefcall(&response);
+
+    /* Sticky bit on a directory, the /tmp case. */
+    response = walk(client, 1, 135, sticky_name, 1);
+    expect_type("walk sticky directory", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    stat = unpack_stat(client, 135);
+    assert(stat.mode == (P9_DMDIR | 0700));
+    ixp_freestat(&stat);
+    stat = unchanged_stat();
+    stat.mode = P9_DMDIR | S9_DMSETVTX | 0777;
+    response = wstat_fid(client, 135, &stat);
+    expect_type("chmod sticky", &response, P9_RWStat);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "sticky");
+    assert(lstat(path, &native) == 0);
+    assert((native.st_mode & 07777) == (S_ISVTX | 0777));
+    stat = unpack_stat(client, 135);
+    assert(stat.mode == (P9_DMDIR | S9_DMSETVTX | 0777));
+    ixp_freestat(&stat);
+
+    /* mknod through create: FIFO and socket work unprivileged. */
+    response = walk(client, 1, 136, NULL, 0);
+    expect_type("clone root for mknod", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    response = create_fid(client, 136, "made-fifo", P9_DMNAMEDPIPE | 0640,
+                          P9_OREAD, "");
+    expect_type("create fifo", &response, P9_RCreate);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "made-fifo");
+    assert(lstat(path, &native) == 0 && S_ISFIFO(native.st_mode));
+    assert((native.st_mode & 07777) == 0640);
+    response = read_fid(client, 136, 0, 1);
+    expect_error("read on a created fifo", &response, EBADF);
+    ixp_freefcall(&response);
+    response = clunk(client, 136);
+    expect_type("clunk fifo", &response, P9_RClunk);
+    ixp_freefcall(&response);
+
+    if(!riscos) {
+        response = walk(client, 1, 137, NULL, 0);
+        expect_type("clone root for socket", &response, P9_RWalk);
+        ixp_freefcall(&response);
+        response = create_fid(client, 137, "made-sock", P9_DMSOCKET | 0600,
+                              P9_OREAD, "");
+        expect_type("create socket", &response, P9_RCreate);
+        ixp_freefcall(&response);
+        make_path(path, sizeof(path), root, "made-sock");
+        assert(lstat(path, &native) == 0 && S_ISSOCK(native.st_mode));
+        response = clunk(client, 137);
+        expect_type("clunk socket", &response, P9_RClunk);
+        ixp_freefcall(&response);
+
+        response = walk(client, 1, 138, NULL, 0);
+        expect_type("clone root for device", &response, P9_RWalk);
+        ixp_freefcall(&response);
+        response = create_fid(client, 138, "made-dev", P9_DMDEVICE | 0600,
+                              P9_OREAD, "c 1 3 x");
+        expect_error("malformed device extension", &response, EINVAL);
+        ixp_freefcall(&response);
+        response = create_fid(client, 138, "made-dev", P9_DMDEVICE | 0600,
+                              P9_OREAD, "c 1 3");
+        make_path(path, sizeof(path), root, "made-dev");
+        if(getuid() == 0) {
+            expect_type("create device as root", &response, P9_RCreate);
+            ixp_freefcall(&response);
+            assert(lstat(path, &native) == 0 && S_ISCHR(native.st_mode));
+            assert(major(native.st_rdev) == 1 && minor(native.st_rdev) == 3);
+            response = clunk(client, 138);
+            expect_type("clunk device", &response, P9_RClunk);
+        } else {
+            expect_error("create device unprivileged", &response, EPERM);
+            ixp_freefcall(&response);
+            assert(lstat(path, &native) < 0 && errno == ENOENT);
+            response = clunk(client, 138);
+            expect_type("clunk after failed mknod", &response, P9_RClunk);
+        }
+        ixp_freefcall(&response);
+    }
+
+    /* A write-only open must not be readable, whatever libixp allows. */
+    response = walk(client, 1, 139, write_only_name, 1);
+    expect_type("walk write-only", &response, P9_RWalk);
+    ixp_freefcall(&response);
+    response = open_fid(client, 139, P9_OWRITE | P9_OTRUNC);
+    expect_type("open write-only", &response, P9_ROpen);
+    ixp_freefcall(&response);
+    response = read_fid(client, 139, 0, 8);
+    expect_error("read on write-only fid", &response, EBADF);
+    ixp_freefcall(&response);
+    response = remove_fid(client, 139);
+    expect_type("remove open write-only file", &response, P9_RRemove);
+    ixp_freefcall(&response);
+    make_path(path, sizeof(path), root, "write-only");
+    assert(lstat(path, &native) < 0 && errno == ENOENT);
 }
 
 static void test_read_only(const char *binary, const char *root) {
@@ -1578,6 +1677,10 @@ int main(int argc, char **argv) {
     make_path(path, sizeof(path), root, "chardev");
     /* Only root can make device nodes; the test skips the check otherwise. */
     (void)mknod(path, S_IFCHR | 0600, makedev(1, 3));
+    make_path(path, sizeof(path), root, "sticky");
+    assert(mkdir(path, 0700) == 0);
+    make_path(path, sizeof(path), root, "write-only");
+    write_file(path, "write-only");
 
     test_invalid_negotiation(argv[1], root);
     test_response_pack_failure(argv[1], root);
@@ -1597,7 +1700,7 @@ int main(int argc, char **argv) {
     test_orclose_and_exec(&client, root);
     test_qid_mutations(&client);
     test_partial_wstat_qid(&client, root);
-    test_special_files(&client, root);
+    test_special_files(&client, root, strstr(argv[1], "riscos") != NULL);
     stop_server(&client, child);
     test_read_only(argv[1], root);
     if(argc == 3)
@@ -1631,6 +1734,11 @@ int main(int argc, char **argv) {
     make_path(path, sizeof(path), root, "setuid"); unlink(path);
     make_path(path, sizeof(path), root, "chardev"); unlink(path);
     make_path(path, sizeof(path), root, "suid-created"); unlink(path);
+    make_path(path, sizeof(path), root, "sticky"); rmdir(path);
+    make_path(path, sizeof(path), root, "write-only"); unlink(path);
+    make_path(path, sizeof(path), root, "made-fifo"); unlink(path);
+    make_path(path, sizeof(path), root, "made-sock"); unlink(path);
+    make_path(path, sizeof(path), root, "made-dev"); unlink(path);
     make_path(path, sizeof(path), root, "dir"); assert(rmdir(path) == 0);
     assert(rmdir(root) == 0);
     make_path(path, sizeof(path), outside, "secret"); unlink(path);

@@ -10,6 +10,9 @@
 
 #define nil NULL
 #define S9_DIR_CHECKPOINTS 16
+/* Plan 9's DMSETVTX. libixp's header stops at DMSETGID. */
+#define S9_DMSETVTX 0x00010000U
+#define S9_DMSPECIAL (P9_DMSETUID | P9_DMSETGID | S9_DMSETVTX)
 #ifndef S9_MAX_FIDS
 #define S9_MAX_FIDS 1024
 #endif
